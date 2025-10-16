@@ -1,0 +1,50 @@
+{
+  "name": "@hiscojs/object-updater",
+  "version": "1.0.0",
+  "description": "Type-safe, immutable object updates with advanced array merging strategies and proxy-based path tracking",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "jest",
+    "build": "rm -rf dist && tsc",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "object",
+    "update",
+    "merge",
+    "immutable",
+    "typescript",
+    "type-safe",
+    "proxy",
+    "deep-merge",
+    "array-merge"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hisco/object-updater.git"
+  },
+  "dependencies": {
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@types/jest": "^29.5.14",
+    "@types/lodash": "^4.17.13",
+    "@types/node": "^22.10.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}
