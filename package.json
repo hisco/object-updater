@@ -1,6 +1,6 @@
 {
   "name": "@hiscojs/object-updater",
-  "version": "1.0.0",
+  "version": "1.0.7",
   "description": "Type-safe, immutable object updates with advanced array merging strategies and proxy-based path tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

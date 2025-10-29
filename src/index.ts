@@ -189,7 +189,7 @@ export function addInstructions(options: {
  * })
  * ```
  */
-export function updateObject<T extends object>({
+export function updateObject<T>({
   sourceObject,
   annotate
 }: {
@@ -237,15 +237,29 @@ export function updateObject<T extends object>({
         // Handle merge
         if (path.length === 0) {
           const sourceValue = merge(result as any);
-          mergeWithInstructions(result as any, sourceValue);
+          // If merge returns undefined, it means delete everything (replace with empty object)
+          if (sourceValue === undefined) {
+            // Can't delete root, so clear it instead
+            for (const key in result) {
+              if ((result as any).hasOwnProperty(key)) {
+                delete (result as any)[key];
+              }
+            }
+          } else {
+            mergeWithInstructions(result as any, sourceValue);
+          }
         } else {
           const originalValue = _.get(result, createPathString(path));
-          if (originalValue === undefined) {
-            _.set(result, createPathString(path), merge(originalValue));
+          const sourceValue = merge(originalValue);
+
+          // If merge returns undefined, delete the field
+          if (sourceValue === undefined) {
+            _.unset(result as any, createPathString(path));
+          } else if (originalValue === undefined) {
+            _.set(result as any, createPathString(path), sourceValue);
           } else {
-            const sourceValue = merge(originalValue);
             mergeWithInstructions(originalValue, sourceValue);
-            _.set(result, createPathString(path), originalValue as any);
+            _.set(result as any, createPathString(path), originalValue as any);
           }
         }
       }
@@ -261,7 +275,7 @@ export function updateObject<T extends object>({
 /**
  * Finds the path to a value in an object by tracking proxy access
  */
-export function findKeyByProxy<T extends object>(
+export function findKeyByProxy<T>(
   targetObject: T,
   lambda: (proxy: T) => any,
 ): (string | number)[] {
@@ -309,13 +323,15 @@ function mergeWithInstructions(target: any, source: any): void {
     return;
   }
 
-  // Process arrays (not applicable in this context since we're merging objects)
+  // Process arrays - replace by default (clear target, then add source items)
   if (Array.isArray(source)) {
     if (!Array.isArray(target)) {
       // This shouldn't happen in normal usage
       return;
     }
 
+    // Clear target array and replace with source items
+    target.length = 0;
     for (const item of source) {
       target.push(_.cloneDeep(item));
     }
@@ -386,23 +402,33 @@ function mergeWithPropertyInstructions(
           target[propertyName] = [];
         }
 
-        // Apply the merge instruction to the array
-        if (instructions.mergeByContents) {
-          for (const item of sourceValue) {
-            mergeByContentsInArray(target[propertyName], item);
+        // If source array is empty, only replace if no merge instruction is set
+        // (empty with merge instruction means "don't add anything new" not "clear the array")
+        if (sourceValue.length === 0) {
+          if (!instructions.mergeByContents && !instructions.mergeByProp && !instructions.mergeByName) {
+            // No merge instruction, so empty array means replace with empty
+            target[propertyName] = [];
           }
-        } else if (instructions.mergeByProp) {
-          for (const item of sourceValue) {
-            mergeByPropInArray(target[propertyName], item, instructions.mergeByProp);
-          }
-        } else if (instructions.mergeByName) {
-          for (const item of sourceValue) {
-            mergeByNameInArray(target[propertyName], item);
-          }
+          // else: with merge instructions, empty array means "don't add anything", keep existing
         } else {
-          // Default: append items
-          for (const item of sourceValue) {
-            target[propertyName].push(_.cloneDeep(item));
+          // Apply the merge instruction to the non-empty array
+          if (instructions.mergeByContents) {
+            for (const item of sourceValue) {
+              mergeByContentsInArray(target[propertyName], item);
+            }
+          } else if (instructions.mergeByProp) {
+            for (const item of sourceValue) {
+              mergeByPropInArray(target[propertyName], item, instructions.mergeByProp);
+            }
+          } else if (instructions.mergeByName) {
+            for (const item of sourceValue) {
+              mergeByNameInArray(target[propertyName], item);
+            }
+          } else {
+            // Default: append items
+            for (const item of sourceValue) {
+              target[propertyName].push(_.cloneDeep(item));
+            }
           }
         }
       } else if (typeof sourceValue === 'object' && sourceValue !== null) {
@@ -410,7 +436,8 @@ function mergeWithPropertyInstructions(
         if (!target[propertyName] || typeof target[propertyName] !== 'object') {
           target[propertyName] = {};
         }
-        deepMergeWithArrayReplacement(target[propertyName], sourceValue);
+        // Use non-deleting merge since we're in a property instruction context (partial updates)
+        deepMergeWithArrayReplacementNoDelete(target[propertyName], sourceValue);
       } else {
         // For primitives, just assign
         target[propertyName] = sourceValue;
@@ -422,47 +449,131 @@ function mergeWithPropertyInstructions(
   }
 
   // Merge remaining properties using default behavior
-  deepMergeWithArrayReplacement(target, cleanSource);
+  // IMPORTANT: Don't perform deletions here, as the source may be partial
+  // (only containing properties to update, not a full replacement)
+  deepMergeWithArrayReplacementNoDelete(target, cleanSource);
 }
 
 /**
- * Deep merge with special handling for arrays
+ * Deep merge with special handling for arrays (without deletion logic)
+ * Used when merging partial objects where missing keys don't signal deletion
  */
-function deepMergeWithArrayReplacement(target: any, source: any): void {
+function deepMergeWithArrayReplacementNoDelete(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  // Don't handle deletions - source may be partial
+
+  // Handle additions and updates from source
   for (const key in source) {
     if (source.hasOwnProperty(key)) {
-      if (Array.isArray(source[key])) {
-        if (Array.isArray(target[key])) {
-          // Check if any items in source have 'name' property for smart merging
-          if (source[key].length > 0 && typeof source[key][0] === 'object' && 'name' in source[key][0]) {
-            mergeArraysByName(target[key], source[key]);
-          } else {
-            // Default: append items
-            for (const item of source[key]) {
-              target[key].push(_.cloneDeep(item));
-            }
-          }
-        } else {
-          // Replace non-array with array
-          target[key] = _.cloneDeep(source[key]);
+      const sourceValue = source[key];
+
+      // Skip undefined values
+      if (sourceValue === undefined) {
+        continue;
+      }
+
+      if (Array.isArray(sourceValue)) {
+        const targetValue = target[key];
+
+        // Check if target and source arrays are the same reference AND have same length
+        if (targetValue === sourceValue &&
+            Array.isArray(targetValue) &&
+            targetValue.length === sourceValue.length) {
+          continue;
         }
-      } else if (typeof source[key] === 'object' && source[key] !== null) {
+
+        // If arrays are same reference but different lengths, replace with a clone
+        if (targetValue === sourceValue) {
+          target[key] = _.cloneDeep(sourceValue);
+          continue;
+        }
+
+        // If target doesn't have this key or it's not an array, replace it
+        if (!targetValue || !Array.isArray(targetValue)) {
+          target[key] = _.cloneDeep(sourceValue);
+        } else {
+          // Both are arrays - default to replacement
+          target[key] = _.cloneDeep(sourceValue);
+        }
+      } else if (typeof sourceValue === 'object' && sourceValue !== null) {
         // Deep merge objects
         if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) {
           target[key] = {};
         }
 
         // Check for nested property-specific merge instructions
-        const propertyMergeInstructions = extractPropertyMergeInstructions(source[key]);
+        const propertyMergeInstructions = extractPropertyMergeInstructions(sourceValue);
 
         if (Object.keys(propertyMergeInstructions).length > 0) {
-          mergeWithPropertyInstructions(target[key], source[key], propertyMergeInstructions);
+          mergeWithPropertyInstructions(target[key] as Record<string, unknown>, sourceValue as Record<string, unknown>, propertyMergeInstructions);
         } else {
-          deepMergeWithArrayReplacement(target[key], source[key]);
+          deepMergeWithArrayReplacementNoDelete(target[key] as Record<string, unknown>, sourceValue as Record<string, unknown>);
         }
       } else {
         // Replace primitives
-        target[key] = source[key];
+        target[key] = sourceValue;
+      }
+    }
+  }
+}
+
+/**
+ * Deep merge with special handling for arrays
+ */
+function deepMergeWithArrayReplacement(target: Record<string, unknown>, source: Record<string, unknown>): void {
+  // Handle additions and updates from source
+  for (const key in source) {
+    if (source.hasOwnProperty(key)) {
+      const sourceValue = source[key];
+
+      // Handle undefined values - they signal deletion
+      if (sourceValue === undefined) {
+        delete target[key];
+        continue;
+      }
+
+      if (Array.isArray(sourceValue)) {
+        const targetValue = target[key];
+
+        // Check if target and source arrays are the same reference AND have same length
+        // This happens when the user does { ...original } which shallow copies
+        // But if lengths differ, they want to replace it (e.g., setting to empty array)
+        if (targetValue === sourceValue &&
+            Array.isArray(targetValue) &&
+            targetValue.length === sourceValue.length) {
+          // Same reference with same length - no need to merge, skip this key
+          continue;
+        }
+
+        // If arrays are same reference but different lengths, replace with a clone
+        if (targetValue === sourceValue) {
+          target[key] = _.cloneDeep(sourceValue);
+          continue;
+        }
+
+        // If target doesn't have this key or it's not an array, replace it
+        if (!targetValue || !Array.isArray(targetValue)) {
+          target[key] = _.cloneDeep(sourceValue);
+        } else {
+          // Both are arrays - default to replacement
+          target[key] = _.cloneDeep(sourceValue);
+        }
+      } else if (typeof sourceValue === 'object' && sourceValue !== null) {
+        // Deep merge objects
+        if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) {
+          target[key] = {};
+        }
+
+        // Check for nested property-specific merge instructions
+        const propertyMergeInstructions = extractPropertyMergeInstructions(sourceValue);
+
+        if (Object.keys(propertyMergeInstructions).length > 0) {
+          mergeWithPropertyInstructions(target[key] as Record<string, unknown>, sourceValue as Record<string, unknown>, propertyMergeInstructions);
+        } else {
+          deepMergeWithArrayReplacement(target[key] as Record<string, unknown>, sourceValue as Record<string, unknown>);
+        }
+      } else {
+        // Replace primitives
+        target[key] = sourceValue;
       }
     }
   }
